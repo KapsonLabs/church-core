@@ -86,7 +86,7 @@ class TicketDetailSerializer(serializers.ModelSerializer):
         required=False
     )
     branch = BranchShortDetailsSerializer(read_only=True)
-    branch_id = serializers.UUIDField(write_only=True, required=False)
+    branch_id = serializers.UUIDField(write_only=True, required=True)
     closed_by = UserBasicSerializer(read_only=True)
     comments = TicketCommentSerializer(many=True, read_only=True)
     attachments = TicketAttachmentSerializer(many=True, read_only=True)
@@ -112,21 +112,24 @@ class TicketDetailSerializer(serializers.ModelSerializer):
         
         validated_data['created_by'] = user
         
-        # Set branch from branch_id if provided, otherwise use user's branch
-        if branch_id:
-            validated_data['branch'] = Branch.objects.get(id=branch_id)
-        elif user.branch:
-            validated_data['branch'] = user.branch
-        else:
-            raise serializers.ValidationError({
-                'branch_id': 'Branch is required. Either provide branch_id or ensure your user has a branch assigned.'
-            })
+        branch = Branch.objects.filter(
+            id=branch_id,
+            organization__memberships__user=user,
+            organization__memberships__is_active=True,
+        ).first()
+        if not branch and not user.is_superuser:
+            raise serializers.ValidationError({'branch_id': 'Branch is outside your organizations.'})
+        validated_data['branch'] = branch or Branch.objects.get(id=branch_id)
         
         ticket = Ticket.objects.create(**validated_data)
         
         # Assign users
         if assigned_to_ids:
-            users = User.objects.filter(id__in=assigned_to_ids)
+            users = User.objects.filter(
+                id__in=assigned_to_ids,
+                organization_memberships__organization=validated_data['branch'].organization,
+                organization_memberships__is_active=True,
+            ).distinct()
             ticket.assigned_to.set(users)
         
         return ticket
@@ -137,7 +140,14 @@ class TicketDetailSerializer(serializers.ModelSerializer):
         
         # Update branch if branch_id is provided
         if branch_id is not None:
-            validated_data['branch'] = Branch.objects.get(id=branch_id)
+            branch = Branch.objects.filter(
+                id=branch_id,
+                organization__memberships__user=self.context['request'].user,
+                organization__memberships__is_active=True,
+            ).first()
+            if not branch and not self.context['request'].user.is_superuser:
+                raise serializers.ValidationError({'branch_id': 'Branch is outside your organizations.'})
+            validated_data['branch'] = branch or Branch.objects.get(id=branch_id)
         
         # Update ticket fields
         for attr, value in validated_data.items():
@@ -146,7 +156,11 @@ class TicketDetailSerializer(serializers.ModelSerializer):
         
         # Update assigned users if provided
         if assigned_to_ids is not None:
-            users = User.objects.filter(id__in=assigned_to_ids)
+            users = User.objects.filter(
+                id__in=assigned_to_ids,
+                organization_memberships__organization=instance.branch.organization,
+                organization_memberships__is_active=True,
+            ).distinct()
             instance.assigned_to.set(users)
         
         return instance
@@ -212,4 +226,3 @@ class MessageSerializer(serializers.ModelSerializer):
             validated_data['parent_message'] = Message.objects.get(id=parent_message_id)
         
         return super().create(validated_data)
-

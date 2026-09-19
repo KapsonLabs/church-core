@@ -5,25 +5,46 @@ from django.contrib.auth import get_user_model
 User = get_user_model()
 
 
-class CategorySerializer(serializers.ModelSerializer):
+class TenantSerializerMixin:
+    def validate(self, attrs):
+        organization_id = attrs.get('organization_id', getattr(self.instance, 'organization_id', None))
+        if self.instance and organization_id != self.instance.organization_id:
+            raise serializers.ValidationError({'organization_id': 'Content cannot be moved to another organization.'})
+        return attrs
+
+
+class TenantContentSerializerMixin(TenantSerializerMixin):
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        organization_id = attrs.get('organization_id', getattr(self.instance, 'organization_id', None))
+        category_id = attrs.get('category_id')
+        tag_ids = attrs.get('tag_ids', [])
+        if category_id and not Category.objects.filter(id=category_id, organization_id=organization_id).exists():
+            raise serializers.ValidationError({'category_id': 'Category must belong to this organization.'})
+        if tag_ids and Tag.objects.filter(id__in=tag_ids).exclude(organization_id=organization_id).exists():
+            raise serializers.ValidationError({'tag_ids': 'All tags must belong to this organization.'})
+        return attrs
+
+
+class CategorySerializer(TenantSerializerMixin, serializers.ModelSerializer):
     """Serializer for Category model."""
     
     class Meta:
         model = Category
-        fields = ['id', 'name', 'description', 'slug', 'is_active', 'created_at', 'updated_at']
+        fields = ['id', 'organization_id', 'name', 'description', 'slug', 'is_active', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-class TagSerializer(serializers.ModelSerializer):
+class TagSerializer(TenantSerializerMixin, serializers.ModelSerializer):
     """Serializer for Tag model."""
     
     class Meta:
         model = Tag
-        fields = ['id', 'name', 'slug', 'created_at']
+        fields = ['id', 'organization_id', 'name', 'slug', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
-class FAQSerializer(serializers.ModelSerializer):
+class FAQSerializer(TenantContentSerializerMixin, serializers.ModelSerializer):
     """Serializer for FAQ model."""
     category = CategorySerializer(read_only=True)
     category_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
@@ -39,7 +60,7 @@ class FAQSerializer(serializers.ModelSerializer):
     class Meta:
         model = FAQ
         fields = [
-            'id', 'question', 'answer', 'category', 'category_id', 'tags', 'tag_ids',
+            'id', 'organization_id', 'question', 'answer', 'category', 'category_id', 'tags', 'tag_ids',
             'is_published', 'view_count', 'helpful_count', 'not_helpful_count',
             'created_by', 'created_by_email', 'updated_by', 'updated_by_email',
             'created_at', 'updated_at', 'published_at'
@@ -90,7 +111,7 @@ class FAQSerializer(serializers.ModelSerializer):
         return instance
 
 
-class SOPSerializer(serializers.ModelSerializer):
+class SOPSerializer(TenantContentSerializerMixin, serializers.ModelSerializer):
     """Serializer for SOP model."""
     category = CategorySerializer(read_only=True)
     category_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
@@ -108,7 +129,7 @@ class SOPSerializer(serializers.ModelSerializer):
     class Meta:
         model = SOP
         fields = [
-            'id', 'title', 'content', 'version', 'category', 'category_id', 'tags', 'tag_ids',
+            'id', 'organization_id', 'title', 'content', 'version', 'category', 'category_id', 'tags', 'tag_ids',
             'status', 'status_display', 'is_published', 'view_count',
             'created_by', 'created_by_email', 'updated_by', 'updated_by_email',
             'approved_by', 'approved_by_email', 'created_at', 'updated_at',
@@ -159,7 +180,7 @@ class SOPSerializer(serializers.ModelSerializer):
         return instance
 
 
-class PolicyExplanationSerializer(serializers.ModelSerializer):
+class PolicyExplanationSerializer(TenantContentSerializerMixin, serializers.ModelSerializer):
     """Serializer for PolicyExplanation model."""
     category = CategorySerializer(read_only=True)
     category_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
@@ -175,7 +196,7 @@ class PolicyExplanationSerializer(serializers.ModelSerializer):
     class Meta:
         model = PolicyExplanation
         fields = [
-            'id', 'title', 'content', 'policy_reference', 'category', 'category_id',
+            'id', 'organization_id', 'title', 'content', 'policy_reference', 'category', 'category_id',
             'tags', 'tag_ids', 'is_published', 'view_count',
             'created_by', 'created_by_email', 'updated_by', 'updated_by_email',
             'created_at', 'updated_at', 'published_at'
@@ -225,7 +246,7 @@ class PolicyExplanationSerializer(serializers.ModelSerializer):
         return instance
 
 
-class TrainingArticleSerializer(serializers.ModelSerializer):
+class TrainingArticleSerializer(TenantContentSerializerMixin, serializers.ModelSerializer):
     """Serializer for TrainingArticle model."""
     category = CategorySerializer(read_only=True)
     category_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
@@ -242,7 +263,7 @@ class TrainingArticleSerializer(serializers.ModelSerializer):
     class Meta:
         model = TrainingArticle
         fields = [
-            'id', 'title', 'summary', 'content', 'category', 'category_id', 'tags', 'tag_ids',
+            'id', 'organization_id', 'title', 'summary', 'content', 'category', 'category_id', 'tags', 'tag_ids',
             'difficulty_level', 'difficulty_level_display', 'estimated_read_time',
             'is_published', 'is_compulsory', 'view_count', 'created_by', 'created_by_email',
             'updated_by', 'updated_by_email', 'created_at', 'updated_at', 'published_at'
@@ -305,4 +326,3 @@ class TrainingArticleReadSerializer(serializers.ModelSerializer):
             'training_article_title', 'read_at', 'completed_at'
         ]
         read_only_fields = ['id', 'read_at', 'completed_at']
-

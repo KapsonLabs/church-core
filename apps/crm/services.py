@@ -358,9 +358,14 @@ class TicketService:
 
     @staticmethod
     def _filter_by_user(queryset, user):
-        if user.is_staff:
+        if user.is_superuser:
             return queryset
-        return queryset.filter(Q(created_by=user) | Q(assigned_to=user)).distinct()
+        organization_ids = user.organization_memberships.filter(
+            is_active=True
+        ).values_list('organization_id', flat=True)
+        return queryset.filter(branch__organization_id__in=organization_ids).filter(
+            Q(created_by=user) | Q(assigned_to=user)
+        ).distinct()
 
     @staticmethod
     def _apply_filters(queryset, params, user):
@@ -472,4 +477,3 @@ class TicketService:
             'updated_at': ticket.updated_at.isoformat() if ticket.updated_at else None,
             'comment_count': comment_count,
         }
-

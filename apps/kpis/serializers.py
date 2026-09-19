@@ -266,6 +266,10 @@ class KPIAssignmentCreateSerializer(serializers.ModelSerializer):
         assignment_type = data.get('assignment_type')
         role_id = data.get('role_id')
         user_id = data.get('user_id')
+        kpi_id = data.get('kpi_id') or getattr(self.instance, 'kpi_id', None)
+        kpi = KPI.objects.filter(id=kpi_id).first()
+        if not kpi:
+            raise serializers.ValidationError({'kpi_id': 'KPI does not exist.'})
         
         if assignment_type == 'role' and not role_id:
             raise serializers.ValidationError({'role_id': 'Role ID is required when assignment_type is "role".'})
@@ -273,6 +277,14 @@ class KPIAssignmentCreateSerializer(serializers.ModelSerializer):
         if assignment_type == 'user' and not user_id:
             raise serializers.ValidationError({'user_id': 'User ID is required when assignment_type is "user".'})
         
+        if role_id and not Role.objects.filter(id=role_id, organization=kpi.organization, is_active=True).exists():
+            raise serializers.ValidationError({'role_id': 'Role must be active in the KPI organization.'})
+        if user_id and not User.objects.filter(
+            id=user_id,
+            organization_memberships__organization=kpi.organization,
+            organization_memberships__is_active=True,
+        ).exists():
+            raise serializers.ValidationError({'user_id': 'User must be active in the KPI organization.'})
         return data
     
     def create(self, validated_data):

@@ -1,196 +1,100 @@
 import uuid
+
 from django.conf import settings
-from django.db import models
-from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
-from django.utils import timezone
-from apps.accounts.models import Role
+from django.db import models
 
 
 class Organization(models.Model):
-    """Represents a top-level organization (e.g., company or NGO)."""
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255, unique=True)
+    slug = models.SlugField(max_length=255, unique=True)
     description = models.TextField(blank=True)
-    email = models.EmailField(blank=True, null=True)
-    phone_number = models.CharField(max_length=25, blank=True, null=True)
-    website = models.URLField(blank=True, null=True)
+    email = models.EmailField(blank=True)
+    phone_number = models.CharField(max_length=25, blank=True)
+    website = models.URLField(blank=True)
     physical_address = models.CharField(max_length=500, blank=True)
-    logo = models.ImageField(upload_to="organization_logos/%Y/%m/%d/", blank=True, null=True)
+    logo = models.ImageField(upload_to="organization_logos/%Y/%m/%d/", blank=True)
     is_active = models.BooleanField(default=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = _("organization")
-        verbose_name_plural = _("organizations")
         ordering = ["name"]
 
-    def __str__(self) -> str:
+    def __str__(self):
         return self.name
 
 
-class OrganizationLicense(models.Model):
-    """Stores licensing information for an organization."""
-
-    PLAN_CHOICES = [
-        ("starter", "Starter"),
-        ("standard", "Standard"),
-        ("premium", "Premium"),
-        ("enterprise", "Enterprise"),
-    ]
-
-    STATUS_CHOICES = [
-        ("active", "Active"),
-        ("pending", "Pending"),
-        ("expired", "Expired"),
-        ("suspended", "Suspended"),
-    ]
-
-    organization = models.OneToOneField(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="license",
-        primary_key=True,
-    )
-    license_key = models.CharField(max_length=255, unique=True)
-    plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default="starter")
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    seats = models.PositiveIntegerField(default=5, help_text="Maximum number of active users allowed.")
-    starts_on = models.DateField()
-    expires_on = models.DateField()
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        verbose_name = _("organization license")
-        verbose_name_plural = _("organization licenses")
-
-    def __str__(self) -> str:
-        return f"{self.organization.name} - {self.license_key}"
-
-    @property
-    def is_active(self) -> bool:
-
-        today = timezone.now().date()
-        return self.status == "active" and self.starts_on <= today <= self.expires_on
-
-
 class Branch(models.Model):
-    """Represents a branch under an organization."""
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name="branches",
-    )
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="branches")
     name = models.CharField(max_length=255)
-    code = models.CharField(max_length=50, help_text="Short unique code for the branch.")
-    email = models.EmailField(blank=True, null=True)
-    phone_number = models.CharField(max_length=25, blank=True, null=True)
+    code = models.CharField(max_length=50)
+    email = models.EmailField(blank=True)
+    phone_number = models.CharField(max_length=25, blank=True)
     address = models.CharField(max_length=500, blank=True)
     city = models.CharField(max_length=100, blank=True)
-    country = models.CharField(max_length=100, blank=True, default="")
+    country = models.CharField(max_length=100, blank=True)
     is_active = models.BooleanField(default=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        verbose_name = _("branch")
-        verbose_name_plural = _("branches")
-        unique_together = ("organization", "code")
         ordering = ["organization__name", "name"]
-        indexes = [
-            models.Index(fields=["organization", "is_active"]),
-            models.Index(fields=["code"]),
-        ]
+        constraints = [models.UniqueConstraint(fields=["organization", "code"], name="unique_branch_code_per_org")]
 
-    def __str__(self) -> str:
-        return f"{self.organization.name} - {self.name}"
+    def __str__(self):
+        return f"{self.organization} - {self.name}"
 
 
 class BranchSettings(models.Model):
-    """Configuration settings specific to a branch."""
-
-    branch = models.OneToOneField(
-        Branch,
-        on_delete=models.CASCADE,
-        related_name="settings",
-    )
+    branch = models.OneToOneField(Branch, on_delete=models.CASCADE, related_name="settings")
     timezone = models.CharField(max_length=50, default="UTC")
     currency = models.CharField(max_length=10, default="USD")
-    date_format = models.CharField(max_length=20, default="YYYY-MM-DD")
     language = models.CharField(max_length=10, default="en")
-    working_hours_start = models.TimeField(blank=True, null=True)
-    working_hours_end = models.TimeField(blank=True, null=True)
-    allow_weekend_operations = models.BooleanField(default=False)
-
-    notifications_email = models.EmailField(blank=True, null=True)
-    notifications_phone = models.CharField(max_length=25, blank=True, null=True)
-
+    date_format = models.CharField(max_length=20, default="YYYY-MM-DD")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        verbose_name = _("branch settings")
-        verbose_name_plural = _("branch settings")
-
-    def __str__(self) -> str:
+    def __str__(self):
         return f"Settings for {self.branch}"
 
 
-class BranchUser(models.Model):
-    """Associates users with branches and optional roles."""
-
+class OrganizationMembership(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    branch = models.ForeignKey(
-        Branch,
-        on_delete=models.CASCADE,
-        related_name="branch_users",
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="organization_branches",
-    )
-    role = models.ForeignKey(
-        Role,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="branch_users",
-    )
-    is_branch_admin = models.BooleanField(default=False)
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="memberships")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="organization_memberships")
+    role = models.ForeignKey("accounts.Role", on_delete=models.SET_NULL, null=True, blank=True, related_name="memberships")
     is_active = models.BooleanField(default=True)
-    assigned_at = models.DateTimeField(auto_now_add=True)
-    assigned_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="branch_assignments_made",
-    )
+    joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        verbose_name = _("branch user")
-        verbose_name_plural = _("branch users")
-        unique_together = ("branch", "user")
-        ordering = ["branch__organization__name", "branch__name", "user__email"]
-        indexes = [
-            models.Index(fields=["branch", "is_active"]),
-            models.Index(fields=["user"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.user.email} @ {self.branch}"
+        constraints = [models.UniqueConstraint(fields=["organization", "user"], name="unique_org_membership")]
 
     def clean(self):
+        if self.role and self.role.organization_id != self.organization_id:
+            raise ValidationError({"role": "Role must belong to the same organization."})
 
-        if self.role and not self.role.is_active:
-            raise ValidationError(_("Assigned role must be active."))
+    def __str__(self):
+        return f"{self.user} @ {self.organization}"
 
+
+class BranchMembership(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    branch = models.ForeignKey(Branch, on_delete=models.CASCADE, related_name="memberships")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="branch_memberships")
+    is_active = models.BooleanField(default=True)
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["branch", "user"], name="unique_branch_membership")]
+
+    def clean(self):
+        if self.user_id and self.branch_id and not OrganizationMembership.objects.filter(
+            user_id=self.user_id, organization_id=self.branch.organization_id, is_active=True
+        ).exists():
+            raise ValidationError({"user": "User must be an active organization member first."})
+
+    def __str__(self):
+        return f"{self.user} @ {self.branch}"

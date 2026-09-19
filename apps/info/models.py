@@ -12,9 +12,10 @@ class Category(models.Model):
     Category model for organizing content (FAQs, SOPs, Policies, Training Articles).
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=255, unique=True)
+    organization = models.ForeignKey('organization.Organization', on_delete=models.CASCADE, related_name='info_categories')
+    name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    slug = models.SlugField(max_length=255, unique=True, blank=True)
+    slug = models.SlugField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -26,6 +27,10 @@ class Category(models.Model):
         indexes = [
             models.Index(fields=['name']),
             models.Index(fields=['slug']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['organization', 'name'], name='unique_info_category_name_per_org'),
+            models.UniqueConstraint(fields=['organization', 'slug'], name='unique_info_category_slug_per_org'),
         ]
 
     def __str__(self):
@@ -42,8 +47,9 @@ class Tag(models.Model):
     Tag model for tagging content across different types.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100, unique=True)
-    slug = models.SlugField(max_length=100, unique=True, blank=True)
+    organization = models.ForeignKey('organization.Organization', on_delete=models.CASCADE, related_name='info_tags')
+    name = models.CharField(max_length=100)
+    slug = models.SlugField(max_length=100, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -52,6 +58,10 @@ class Tag(models.Model):
         ordering = ['name']
         indexes = [
             models.Index(fields=['name']),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['organization', 'name'], name='unique_info_tag_name_per_org'),
+            models.UniqueConstraint(fields=['organization', 'slug'], name='unique_info_tag_slug_per_org'),
         ]
 
     def __str__(self):
@@ -68,6 +78,7 @@ class FAQ(models.Model):
     Frequently Asked Questions model.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey('organization.Organization', on_delete=models.CASCADE, related_name='faqs')
     question = models.CharField(max_length=500)
     answer = models.TextField()
     category = models.ForeignKey(
@@ -129,6 +140,7 @@ class SOP(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey('organization.Organization', on_delete=models.CASCADE, related_name='sops')
     title = models.CharField(max_length=500)
     content = models.TextField()
     version = models.CharField(max_length=50, default='1.0')
@@ -193,6 +205,7 @@ class PolicyExplanation(models.Model):
     Policy Explanation model for explaining policies and procedures.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey('organization.Organization', on_delete=models.CASCADE, related_name='policy_explanations')
     title = models.CharField(max_length=500)
     content = models.TextField()
     policy_reference = models.CharField(
@@ -263,6 +276,7 @@ class TrainingArticle(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey('organization.Organization', on_delete=models.CASCADE, related_name='training_articles')
     title = models.CharField(max_length=500)
     content = models.TextField()
     summary = models.TextField(blank=True, help_text="Brief summary of the article")
@@ -363,4 +377,3 @@ class TrainingArticleRead(models.Model):
     
     def __str__(self):
         return f"{self.user.email} read {self.training_article.title}"
-

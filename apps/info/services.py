@@ -16,7 +16,7 @@ class CategoryService:
     @classmethod
     def get_category_list_queryset(cls, params):
         """Build the category list queryset with all filters applied."""
-        queryset = cls.base_queryset()
+        queryset = cls.base_queryset().filter(organization_id=params.get('organization_id'))
         queryset = cls._apply_filters(queryset, params)
         return queryset
 
@@ -28,9 +28,9 @@ class CategoryService:
         return queryset
 
     @classmethod
-    def get_category_by_id(cls, category_id):
+    def get_category_by_id(cls, category_id, organization_id):
         """Get a category by ID."""
-        return get_object_or_404(Category, id=category_id)
+        return get_object_or_404(Category, id=category_id, organization_id=organization_id)
 
     @classmethod
     def create_category(cls, validated_data):
@@ -56,7 +56,7 @@ class TagService:
     @classmethod
     def get_tag_list_queryset(cls, params):
         """Build the tag list queryset with all filters applied."""
-        queryset = cls.base_queryset()
+        queryset = cls.base_queryset().filter(organization_id=params.get('organization_id'))
         queryset = cls._apply_filters(queryset, params)
         return queryset
 
@@ -68,9 +68,9 @@ class TagService:
         return queryset
 
     @classmethod
-    def get_tag_by_id(cls, tag_id):
+    def get_tag_by_id(cls, tag_id, organization_id):
         """Get a tag by ID."""
-        return get_object_or_404(Tag, id=tag_id)
+        return get_object_or_404(Tag, id=tag_id, organization_id=organization_id)
 
     @classmethod
     def create_tag(cls, validated_data):
@@ -99,7 +99,7 @@ class FAQService:
     @classmethod
     def get_faq_list_queryset(cls, params):
         """Build the FAQ list queryset with all filters applied."""
-        queryset = cls.base_queryset()
+        queryset = cls.base_queryset().filter(organization_id=params.get('organization_id'))
         queryset = cls._apply_filters(queryset, params)
         return queryset.order_by('-created_at')
 
@@ -122,11 +122,11 @@ class FAQService:
         return queryset
 
     @classmethod
-    def get_faq_by_id(cls, faq_id):
+    def get_faq_by_id(cls, faq_id, organization_id):
         """Get a FAQ by ID."""
         return get_object_or_404(
             FAQ.objects.select_related(*cls.LIST_SELECT_RELATED).prefetch_related(*cls.LIST_PREFETCH_RELATED),
-            id=faq_id
+            id=faq_id, organization_id=organization_id
         )
 
     @classmethod
@@ -203,7 +203,7 @@ class SOPService:
     @classmethod
     def get_sop_list_queryset(cls, params):
         """Build the SOP list queryset with all filters applied."""
-        queryset = cls.base_queryset()
+        queryset = cls.base_queryset().filter(organization_id=params.get('organization_id'))
         queryset = cls._apply_filters(queryset, params)
         return queryset.order_by('-created_at')
 
@@ -230,11 +230,11 @@ class SOPService:
         return queryset
 
     @classmethod
-    def get_sop_by_id(cls, sop_id):
+    def get_sop_by_id(cls, sop_id, organization_id):
         """Get a SOP by ID."""
         return get_object_or_404(
             SOP.objects.select_related(*cls.LIST_SELECT_RELATED).prefetch_related(*cls.LIST_PREFETCH_RELATED),
-            id=sop_id
+            id=sop_id, organization_id=organization_id
         )
 
     @classmethod
@@ -306,7 +306,7 @@ class PolicyExplanationService:
     @classmethod
     def get_policy_explanation_list_queryset(cls, params):
         """Build the PolicyExplanation list queryset with all filters applied."""
-        queryset = cls.base_queryset()
+        queryset = cls.base_queryset().filter(organization_id=params.get('organization_id'))
         queryset = cls._apply_filters(queryset, params)
         return queryset.order_by('-created_at')
 
@@ -329,11 +329,11 @@ class PolicyExplanationService:
         return queryset
 
     @classmethod
-    def get_policy_explanation_by_id(cls, policy_id):
+    def get_policy_explanation_by_id(cls, policy_id, organization_id):
         """Get a PolicyExplanation by ID."""
         return get_object_or_404(
             PolicyExplanation.objects.select_related(*cls.LIST_SELECT_RELATED).prefetch_related(*cls.LIST_PREFETCH_RELATED),
-            id=policy_id
+            id=policy_id, organization_id=organization_id
         )
 
     @classmethod
@@ -397,7 +397,7 @@ class TrainingArticleService:
     @classmethod
     def get_training_article_list_queryset(cls, params):
         """Build the TrainingArticle list queryset with all filters applied."""
-        queryset = cls.base_queryset()
+        queryset = cls.base_queryset().filter(organization_id=params.get('organization_id'))
         queryset = cls._apply_filters(queryset, params)
         return queryset.order_by('-created_at')
 
@@ -424,11 +424,11 @@ class TrainingArticleService:
         return queryset
 
     @classmethod
-    def get_training_article_by_id(cls, article_id):
+    def get_training_article_by_id(cls, article_id, organization_id):
         """Get a TrainingArticle by ID."""
         return get_object_or_404(
             TrainingArticle.objects.select_related(*cls.LIST_SELECT_RELATED).prefetch_related(*cls.LIST_PREFETCH_RELATED),
-            id=article_id
+            id=article_id, organization_id=organization_id
         )
 
     @classmethod
@@ -477,4 +477,3 @@ class TrainingArticleService:
         article.view_count += 1
         article.save(update_fields=['view_count'])
         return article
-

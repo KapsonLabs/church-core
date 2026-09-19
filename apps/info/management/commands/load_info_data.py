@@ -1,12 +1,17 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 from apps.info.models import Category, Tag, FAQ, SOP, PolicyExplanation, TrainingArticle
+from apps.organization.models import Organization
 
 
 class Command(BaseCommand):
     help = 'Load initial info data (Categories, Tags, FAQs, SOPs, Policy Explanations, Training Articles)'
 
+    def add_arguments(self, parser):
+        parser.add_argument("--organization-id", required=True)
+
     def handle(self, *args, **options):
+        organization = Organization.objects.get(id=options["organization_id"])
         self.stdout.write('Loading initial info data...')
         
         with transaction.atomic():
@@ -55,6 +60,7 @@ class Command(BaseCommand):
             
             for cat_data in categories_data:
                 category, created = Category.objects.get_or_create(
+                    organization=organization,
                     slug=cat_data['slug'],
                     defaults={
                         'name': cat_data['name'],
@@ -83,6 +89,7 @@ class Command(BaseCommand):
             
             for tag_data in tags_data:
                 tag, created = Tag.objects.get_or_create(
+                    organization=organization,
                     slug=tag_data['slug'],
                     defaults={
                         'name': tag_data['name'],
@@ -147,6 +154,7 @@ class Command(BaseCommand):
                 tag_objects = [tags_map[tag_slug] for tag_slug in faq_data.get('tag_slugs', []) if tag_slug in tags_map]
                 
                 faq, created = FAQ.objects.get_or_create(
+                    organization=organization,
                     question=faq_data['question'],
                     defaults={
                         'answer': faq_data['answer'],
@@ -211,6 +219,7 @@ class Command(BaseCommand):
                 tag_objects = [tags_map[tag_slug] for tag_slug in sop_data.get('tag_slugs', []) if tag_slug in tags_map]
                 
                 sop, created = SOP.objects.get_or_create(
+                    organization=organization,
                     title=sop_data['title'],
                     defaults={
                         'content': sop_data['content'],
@@ -274,6 +283,7 @@ class Command(BaseCommand):
                 tag_objects = [tags_map[tag_slug] for tag_slug in policy_data.get('tag_slugs', []) if tag_slug in tags_map]
                 
                 policy, created = PolicyExplanation.objects.get_or_create(
+                    organization=organization,
                     title=policy_data['title'],
                     defaults={
                         'content': policy_data['content'],
@@ -391,6 +401,7 @@ class Command(BaseCommand):
                 tag_objects = [tags_map[tag_slug] for tag_slug in article_data.get('tag_slugs', []) if tag_slug in tags_map]
                 
                 article, created = TrainingArticle.objects.get_or_create(
+                    organization=organization,
                     title=article_data['title'],
                     defaults={
                         'content': article_data['content'],

@@ -1,36 +1,16 @@
 from django.urls import path
 
-from .views import (
-    OrganizationListCreateView,
-    OrganizationDetailView,
-    OrganizationLicenseView,
-    BranchListCreateView,
-    BranchDetailView,
-    BranchSettingsView,
-    BranchUserListCreateView,
-    BranchUserDetailView,
-)
-
+from .views import BranchDetailView, BranchListCreateView, BranchMembershipDetailView, BranchMembershipListCreateView, BranchSettingsView, OrganizationDetailView, OrganizationListCreateView, OrganizationMembershipDetailView, OrganizationMembershipListCreateView
 
 app_name = "organization"
-
 urlpatterns = [
-    # Organizations
-    path("organizations/", OrganizationListCreateView.as_view(), name="organization-list-create"),
-    path("organizations/<uuid:pk>/", OrganizationDetailView.as_view(), name="organization-detail"),
-
-    # Organization License
-    path("organizations/license/", OrganizationLicenseView.as_view(), name="organization-license"),
-
-    # Branches
+    path("", OrganizationListCreateView.as_view(), name="list-create"),
+    path("<uuid:organization_id>/", OrganizationDetailView.as_view(), name="detail"),
     path("branches/", BranchListCreateView.as_view(), name="branch-list-create"),
-    path("branches/<uuid:pk>/", BranchDetailView.as_view(), name="branch-detail"),
-
-    # Branch settings
-    path("branches/settings/", BranchSettingsView.as_view(), name="branch-settings"),
-
-    # Branch users
-    path("branches/users/", BranchUserListCreateView.as_view(), name="branch-user-list-create"),
-    path("branches/users/<uuid:pk>/", BranchUserDetailView.as_view(), name="branch-user-detail"),
+    path("<uuid:organization_id>/branches/<uuid:pk>/", BranchDetailView.as_view(), name="branch-detail"),
+    path("<uuid:organization_id>/branches/<uuid:branch_id>/settings/", BranchSettingsView.as_view(), name="branch-settings"),
+    path("<uuid:organization_id>/memberships/", OrganizationMembershipListCreateView.as_view(), name="membership-list-create"),
+    path("<uuid:organization_id>/memberships/<uuid:pk>/", OrganizationMembershipDetailView.as_view(), name="membership-detail"),
+    path("<uuid:organization_id>/branches/<uuid:branch_id>/memberships/", BranchMembershipListCreateView.as_view(), name="branch-membership-list-create"),
+    path("<uuid:organization_id>/branch-memberships/<uuid:pk>/", BranchMembershipDetailView.as_view(), name="branch-membership-detail"),
 ]
-

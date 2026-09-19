@@ -25,15 +25,33 @@ from .serializers import (
     KPIReportCreateSerializer, KPIReportDetailsSerializer,
 )
 from apps.accounts.models import Role, User
+from apps.accounts.permissions import HasTenantPermission
 
 
-class KPIListCreateView(APIView):
+def tenant_queryset(queryset, user, organization_lookup='organization_id'):
+    """Scope any KPI queryset through an organization relationship."""
+    if user.is_superuser:
+        return queryset
+    organization_ids = user.organization_memberships.filter(
+        is_active=True
+    ).values_list('organization_id', flat=True)
+    return queryset.filter(**{f'{organization_lookup}__in': organization_ids})
+
+
+class KPITenantAPIView(APIView):
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "kpis.read", "POST": "kpis.manage", "PUT": "kpis.manage", "PATCH": "kpis.manage", "DELETE": "kpis.manage"}
+
+
+class KPIListCreateView(KPITenantAPIView):
     """List and create KPIs. Only supervisors can create."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request):
         """Get list of KPIs filtered by query params."""
-        queryset = KPI.objects.select_related('organization', 'branch', 'created_by').all()
+        queryset = tenant_queryset(
+            KPI.objects.select_related('organization', 'branch', 'created_by'), request.user
+        )
         
         organization_id = request.query_params.get('organization_id')
         if organization_id:
@@ -55,10 +73,11 @@ class KPIListCreateView(APIView):
         """Create KPI - only supervisors can create."""
         # Check if user has supervisor role
         user = request.user
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
+        supervisor_role = user.organization_memberships.filter(
+            organization_id=request.data.get('organization_id'),
+            is_active=True,
+            role__is_active=True,
+            role__permissions__codename='kpis.manage',
         ).first()
         
         if not supervisor_role and not user.is_superuser:
@@ -76,19 +95,19 @@ class KPIListCreateView(APIView):
         )
 
 
-class KPIDetailView(APIView):
+class KPIDetailView(KPITenantAPIView):
     """Retrieve, update, or delete a KPI."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request, pk):
         """Get KPI details."""
-        kpi = get_object_or_404(KPI.objects.select_related('organization', 'branch', 'created_by'), id=pk)
+        kpi = get_object_or_404(tenant_queryset(KPI.objects.select_related('organization', 'branch', 'created_by'), request.user), id=pk)
         serializer = KPIDetailsSerializer(kpi)
         return Response({"status": 200, "data": serializer.data}, status=status.HTTP_200_OK)
     
     def put(self, request, pk):
         """Update KPI."""
-        kpi = get_object_or_404(KPI.objects.select_related('organization', 'branch', 'created_by'), id=pk)
+        kpi = get_object_or_404(tenant_queryset(KPI.objects.select_related('organization', 'branch', 'created_by'), request.user), id=pk)
         serializer = KPICreateSerializer(kpi, data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
@@ -96,7 +115,7 @@ class KPIDetailView(APIView):
     
     def patch(self, request, pk):
         """Partially update KPI."""
-        kpi = get_object_or_404(KPI.objects.select_related('organization', 'branch', 'created_by'), id=pk)
+        kpi = get_object_or_404(tenant_queryset(KPI.objects.select_related('organization', 'branch', 'created_by'), request.user), id=pk)
         serializer = KPICreateSerializer(kpi, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
@@ -104,13 +123,14 @@ class KPIDetailView(APIView):
     
     def delete(self, request, pk):
         """Delete KPI - only supervisors can delete."""
-        kpi = get_object_or_404(KPI, id=pk)
+        kpi = get_object_or_404(tenant_queryset(KPI.objects.all(), request.user), id=pk)
         
         user = request.user
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
+        supervisor_role = user.organization_memberships.filter(
+            organization=kpi.organization,
+            is_active=True,
+            role__is_active=True,
+            role__permissions__codename='kpis.manage',
         ).first()
         
         if not supervisor_role and not user.is_superuser:
@@ -123,13 +143,13 @@ class KPIDetailView(APIView):
         return Response({"status": 204}, status=status.HTTP_204_NO_CONTENT)
 
 
-class KPIEntryListView(APIView):
+class KPIEntryListView(KPITenantAPIView):
     """List KPI entries. Entries are created automatically by aggregation service."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request):
         """Get list of KPI entries filtered by query params."""
-        queryset = KPIEntry.objects.select_related('kpi', 'kpi__organization', 'kpi__branch', 'entered_by').all()
+        queryset = tenant_queryset(KPIEntry.objects.select_related('kpi', 'kpi__organization', 'kpi__branch', 'entered_by'), request.user, 'kpi__organization_id')
         
         organization_id = request.query_params.get('organization_id')
         if organization_id:
@@ -148,24 +168,24 @@ class KPIEntryListView(APIView):
         return Response({"status": 200, "data": serializer.data}, status=status.HTTP_200_OK)
 
 
-class KPIEntryDetailView(APIView):
+class KPIEntryDetailView(KPITenantAPIView):
     """Retrieve a KPI entry. Entries are read-only and created by aggregation service."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request, pk):
         """Get KPI entry details."""
-        entry = get_object_or_404(KPIEntry.objects.select_related('kpi', 'entered_by'), id=pk)
+        entry = get_object_or_404(tenant_queryset(KPIEntry.objects.select_related('kpi', 'entered_by'), request.user, 'kpi__organization_id'), id=pk)
         serializer = KPIEntryDetailsSerializer(entry)
         return Response({"status": 200, "data": serializer.data}, status=status.HTTP_200_OK)
 
 
-class KPIActionListCreateView(APIView):
+class KPIActionListCreateView(KPITenantAPIView):
     """List and create KPI actions."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request):
         """Get list of KPI actions filtered by query params."""
-        queryset = KPIAction.objects.select_related('kpi', 'kpi__organization', 'user').all()
+        queryset = tenant_queryset(KPIAction.objects.select_related('kpi', 'kpi__organization', 'user'), request.user, 'kpi__organization_id')
         
         organization_id = request.query_params.get('organization_id')
         if organization_id:
@@ -198,19 +218,19 @@ class KPIActionListCreateView(APIView):
         )
 
 
-class KPIActionDetailView(APIView):
+class KPIActionDetailView(KPITenantAPIView):
     """Retrieve, update, or delete a KPI action."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request, pk):
         """Get KPI action details."""
-        action = get_object_or_404(KPIAction.objects.select_related('kpi', 'user'), id=pk)
+        action = get_object_or_404(tenant_queryset(KPIAction.objects.select_related('kpi', 'user'), request.user, 'kpi__organization_id'), id=pk)
         serializer = KPIActionDetailsSerializer(action)
         return Response({"status": 200, "data": serializer.data}, status=status.HTTP_200_OK)
     
     def put(self, request, pk):
         """Update KPI action."""
-        action = get_object_or_404(KPIAction.objects.select_related('kpi', 'user'), id=pk)
+        action = get_object_or_404(tenant_queryset(KPIAction.objects.select_related('kpi', 'user'), request.user, 'kpi__organization_id'), id=pk)
         serializer = KPIActionCreateSerializer(action, data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
@@ -218,7 +238,7 @@ class KPIActionDetailView(APIView):
     
     def patch(self, request, pk):
         """Partially update KPI action."""
-        action = get_object_or_404(KPIAction.objects.select_related('kpi', 'user'), id=pk)
+        action = get_object_or_404(tenant_queryset(KPIAction.objects.select_related('kpi', 'user'), request.user, 'kpi__organization_id'), id=pk)
         serializer = KPIActionCreateSerializer(action, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
@@ -226,18 +246,18 @@ class KPIActionDetailView(APIView):
     
     def delete(self, request, pk):
         """Delete KPI action."""
-        action = get_object_or_404(KPIAction, id=pk)
+        action = get_object_or_404(tenant_queryset(KPIAction.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         action.delete()
         return Response({"status": 204}, status=status.HTTP_204_NO_CONTENT)
 
 
-class KPIStatsView(APIView):
+class KPIStatsView(KPITenantAPIView):
     """Get statistics for a KPI."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request, kpi_id):
         """Get KPI statistics including current value, target comparison, etc."""
-        kpi = get_object_or_404(KPI, id=kpi_id)
+        kpi = get_object_or_404(tenant_queryset(KPI.objects.all(), request.user), id=kpi_id)
         
         # Get latest entry
         latest_entry = kpi.entries.order_by('-period_start').first()
@@ -268,9 +288,9 @@ class KPIStatsView(APIView):
         return Response({"status": 200, "data": stats}, status=status.HTTP_200_OK)
 
 
-class KPITrendAnalysisView(APIView):
+class KPITrendAnalysisView(KPITenantAPIView):
     """Get trend analysis for a KPI showing values over time and percentage changes."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request, kpi_id):
         """
@@ -282,7 +302,7 @@ class KPITrendAnalysisView(APIView):
         Query params:
             - periods: Number of periods to return (default: 12)
         """
-        kpi = get_object_or_404(KPI, id=kpi_id)
+        kpi = get_object_or_404(tenant_queryset(KPI.objects.all(), request.user), id=kpi_id)
         
         # Get number of periods to analyze (default to 12)
         periods_count = int(request.query_params.get('periods', 12))
@@ -311,14 +331,14 @@ class UserKPIsView(APIView):
             assignment_type='user'
         ).select_related('kpi', 'kpi__organization', 'kpi__branch')
         
-        # Get KPIs assigned to user's role (if user has a role)
-        role_assignments = KPIAssignment.objects.none()
-        if user.role:
-            role_assignments = KPIAssignment.objects.filter(
-                role=user.role,
-                is_active=True,
-                assignment_type='role'
-            ).select_related('kpi', 'kpi__organization', 'kpi__branch')
+        role_ids = user.organization_memberships.filter(
+            is_active=True, role__isnull=False
+        ).values_list('role_id', flat=True)
+        role_assignments = KPIAssignment.objects.filter(
+            role_id__in=role_ids,
+            is_active=True,
+            assignment_type='role'
+        ).select_related('kpi', 'kpi__organization', 'kpi__branch')
         
         # Combine and get unique KPIs
         all_assignments = list(user_assignments) + list(role_assignments)
@@ -433,15 +453,15 @@ class UserKPIsView(APIView):
             return start, end
 
 
-class KPIAssignmentListCreateView(APIView):
+class KPIAssignmentListCreateView(KPITenantAPIView):
     """List and create KPI assignments."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request):
         """Get list of KPI assignments filtered by query params."""
-        queryset = KPIAssignment.objects.select_related(
+        queryset = tenant_queryset(KPIAssignment.objects.select_related(
             'kpi', 'kpi__organization', 'role', 'user', 'assigned_by'
-        ).all()
+        ), request.user, 'kpi__organization_id')
         
         kpi_id = request.query_params.get('kpi_id')
         if kpi_id:
@@ -470,10 +490,11 @@ class KPIAssignmentListCreateView(APIView):
     def post(self, request):
         """Create KPI assignment - only supervisors can create."""
         user = request.user
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
+        supervisor_role = user.organization_memberships.filter(
+            organization__kpis__id=request.data.get('kpi_id'),
+            is_active=True,
+            role__is_active=True,
+            role__permissions__codename='kpis.manage',
         ).first()
         
         if not supervisor_role and not user.is_superuser:
@@ -491,14 +512,14 @@ class KPIAssignmentListCreateView(APIView):
         )
 
 
-class KPIAssignmentDetailView(APIView):
+class KPIAssignmentDetailView(KPITenantAPIView):
     """Retrieve, update, or delete a KPI assignment."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request, pk):
         """Get KPI assignment details."""
         assignment = get_object_or_404(
-            KPIAssignment.objects.select_related('kpi', 'role', 'user', 'assigned_by'),
+            tenant_queryset(KPIAssignment.objects.select_related('kpi', 'role', 'user', 'assigned_by'), request.user, 'kpi__organization_id'),
             id=pk
         )
         serializer = KPIAssignmentDetailsSerializer(assignment)
@@ -506,7 +527,7 @@ class KPIAssignmentDetailView(APIView):
     
     def put(self, request, pk):
         """Update KPI assignment."""
-        assignment = get_object_or_404(KPIAssignment, id=pk)
+        assignment = get_object_or_404(tenant_queryset(KPIAssignment.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         serializer = KPIAssignmentCreateSerializer(assignment, data=request.data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
@@ -514,7 +535,7 @@ class KPIAssignmentDetailView(APIView):
     
     def patch(self, request, pk):
         """Partially update KPI assignment."""
-        assignment = get_object_or_404(KPIAssignment, id=pk)
+        assignment = get_object_or_404(tenant_queryset(KPIAssignment.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         serializer = KPIAssignmentCreateSerializer(assignment, data=request.data, partial=True, context={'request': request})
         serializer.is_valid(raise_exception=True)
         instance = serializer.save()
@@ -522,13 +543,14 @@ class KPIAssignmentDetailView(APIView):
     
     def delete(self, request, pk):
         """Delete KPI assignment - only supervisors can delete."""
-        assignment = get_object_or_404(KPIAssignment, id=pk)
+        assignment = get_object_or_404(tenant_queryset(KPIAssignment.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         
         user = request.user
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
+        supervisor_role = user.organization_memberships.filter(
+            organization=assignment.kpi.organization,
+            is_active=True,
+            role__is_active=True,
+            role__permissions__codename='kpis.manage',
         ).first()
         
         if not supervisor_role and not user.is_superuser:
@@ -541,23 +563,30 @@ class KPIAssignmentDetailView(APIView):
         return Response({"status": 204}, status=status.HTTP_204_NO_CONTENT)
 
 
-class KPIReportListCreateView(APIView):
+class KPIReportListCreateView(KPITenantAPIView):
     """List and create KPI reports."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request):
         """Get list of KPI reports filtered by query params."""
-        queryset = KPIReport.objects.select_related(
+        queryset = tenant_queryset(KPIReport.objects.select_related(
             'kpi', 'assignment', 'reported_by', 'approved_by'
-        ).all()
+        ), request.user, 'kpi__organization_id')
         
         # Regular users can only see their own reports
         user = request.user
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
-        ).first()
+        if user.is_superuser:
+            supervisor_role = True
+        else:
+            accessible_organizations = user.organization_memberships.filter(
+                is_active=True
+            ).values_list('organization_id', flat=True)
+            queryset = queryset.filter(kpi__organization_id__in=accessible_organizations)
+            supervisor_role = user.organization_memberships.filter(
+                is_active=True,
+                role__is_active=True,
+                role__permissions__codename='kpis.manage',
+            ).exists()
         
         if not supervisor_role and not user.is_superuser:
             queryset = queryset.filter(reported_by=user)
@@ -594,7 +623,7 @@ class KPIReportListCreateView(APIView):
                 {'status': 400, 'message': 'assignment_id is required.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        assignment = KPIAssignment.objects.get(id=assignment_id)
+        assignment = get_object_or_404(tenant_queryset(KPIAssignment.objects.all(), request.user, 'kpi__organization_id'), id=assignment_id)
         
         user = request.user
         
@@ -606,7 +635,11 @@ class KPIReportListCreateView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         elif assignment.assignment_type == 'role':
-            if not user.role or user.role != assignment.role:
+            if not user.organization_memberships.filter(
+                organization=assignment.kpi.organization,
+                role=assignment.role,
+                is_active=True,
+            ).exists():
                 return Response(
                     {'status': 403, 'message': 'You can only create reports for KPIs assigned to your role.'},
                     status=status.HTTP_403_FORBIDDEN
@@ -619,23 +652,24 @@ class KPIReportListCreateView(APIView):
         )
 
 
-class KPIReportDetailView(APIView):
+class KPIReportDetailView(KPITenantAPIView):
     """Retrieve, update, or delete a KPI report."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request, pk):
         """Get KPI report details."""
         report = get_object_or_404(
-            KPIReport.objects.select_related('kpi', 'assignment', 'reported_by', 'approved_by'),
+            tenant_queryset(KPIReport.objects.select_related('kpi', 'assignment', 'reported_by', 'approved_by'), request.user, 'kpi__organization_id'),
             id=pk
         )
         
         # Check permissions
         user = request.user
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
+        supervisor_role = user.organization_memberships.filter(
+            organization=report.kpi.organization,
+            is_active=True,
+            role__is_active=True,
+            role__permissions__codename='kpis.manage',
         ).first()
         
         if not supervisor_role and not user.is_superuser and report.reported_by != user:
@@ -649,7 +683,7 @@ class KPIReportDetailView(APIView):
     
     def put(self, request, pk):
         """Update KPI report - only draft reports can be updated."""
-        report = get_object_or_404(KPIReport, id=pk)
+        report = get_object_or_404(tenant_queryset(KPIReport.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         
         # Check permissions
         user = request.user
@@ -672,7 +706,7 @@ class KPIReportDetailView(APIView):
     
     def patch(self, request, pk):
         """Partially update KPI report - only draft reports can be updated."""
-        report = get_object_or_404(KPIReport, id=pk)
+        report = get_object_or_404(tenant_queryset(KPIReport.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         
         # Check permissions
         user = request.user
@@ -695,7 +729,7 @@ class KPIReportDetailView(APIView):
     
     def delete(self, request, pk):
         """Delete KPI report - only draft reports can be deleted."""
-        report = get_object_or_404(KPIReport, id=pk)
+        report = get_object_or_404(tenant_queryset(KPIReport.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         
         # Check permissions
         user = request.user
@@ -715,13 +749,13 @@ class KPIReportDetailView(APIView):
         return Response({"status": 204}, status=status.HTTP_204_NO_CONTENT)
 
 
-class KPIReportSubmitView(APIView):
+class KPIReportSubmitView(KPITenantAPIView):
     """Submit a KPI report for review."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def post(self, request, pk):
         """Submit a draft report for supervisor review."""
-        report = get_object_or_404(KPIReport, id=pk)
+        report = get_object_or_404(tenant_queryset(KPIReport.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         
         # Check permissions
         user = request.user
@@ -742,20 +776,21 @@ class KPIReportSubmitView(APIView):
         return Response({"status": 200, "data": serializer.data}, status=status.HTTP_200_OK)
 
 
-class KPIReportApproveView(APIView):
+class KPIReportApproveView(KPITenantAPIView):
     """Approve or reject a KPI report (supervisors only)."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = KPITenantAPIView.permission_classes
     
     def post(self, request, pk):
         """Approve or reject a submitted report."""
-        report = get_object_or_404(KPIReport, id=pk)
+        report = get_object_or_404(tenant_queryset(KPIReport.objects.all(), request.user, 'kpi__organization_id'), id=pk)
         
         # Check if user is supervisor
         user = request.user
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
+        supervisor_role = user.organization_memberships.filter(
+            organization=report.kpi.organization,
+            is_active=True,
+            role__is_active=True,
+            role__permissions__codename='kpis.manage',
         ).first()
         
         if not supervisor_role and not user.is_superuser:
@@ -817,8 +852,8 @@ class KPIReportApproveView(APIView):
         return Response({"status": 200, "data": serializer.data}, status=status.HTTP_200_OK)
 
 
-class KPIApprovalsView(APIView):
-    permission_classes = [IsAuthenticated]
+class KPIApprovalsView(KPITenantAPIView):
+    permission_classes = KPITenantAPIView.permission_classes
     
     def get(self, request):
         """
@@ -833,11 +868,11 @@ class KPIApprovalsView(APIView):
         user = request.user
         
         # Check if user is supervisor
-        supervisor_role = Role.objects.filter(
-            Q(name='Supervisor') | Q(slug__in=['supervisor', 'manager']),
-            users=user,
-            is_active=True
-        ).first()
+        manager_organization_ids = user.organization_memberships.filter(
+            is_active=True, role__is_active=True,
+            role__permissions__codename='kpis.manage',
+        ).values_list('organization_id', flat=True)
+        supervisor_role = user.is_superuser or bool(manager_organization_ids)
         
         if not supervisor_role and not user.is_superuser:
             return Response(
@@ -857,12 +892,12 @@ class KPIApprovalsView(APIView):
             )
         
         # Get reports filtered by status
-        queryset = KPIReport.objects.filter(
-            status=status_filter
-        ).select_related(
+        queryset = KPIReport.objects.filter(status=status_filter).select_related(
             'kpi', 'assignment', 'reported_by', 'approved_by',
             'kpi__organization', 'kpi__branch'
         )
+        if not user.is_superuser:
+            queryset = queryset.filter(kpi__organization_id__in=manager_organization_ids)
         
         # Optional filters
         kpi_id = request.query_params.get('kpi_id')

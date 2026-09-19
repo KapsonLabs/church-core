@@ -1,28 +1,12 @@
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
-from rest_framework import generics, status
+from rest_framework import generics
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 
-from .models import (
-    Organization,
-    OrganizationLicense,
-    Branch,
-    BranchSettings,
-    BranchUser,
-)
-from .serializers import (
-    OrganizationSerializer,
-    OrganizationLicenseSerializer,
-    BranchSerializer,
-    BranchSettingsSerializer,
-    BranchUserSerializer,
-)
-
-
-# -----------------------------------------------------------------------------
-# Organization Views
-# -----------------------------------------------------------------------------
+from apps.accounts.permissions import HasTenantPermission, IsOrganizationMember
+from .models import Branch, BranchMembership, BranchSettings, Organization, OrganizationMembership
+from .serializers import BranchMembershipSerializer, BranchSerializer, BranchSettingsSerializer, OrganizationMembershipSerializer, OrganizationSerializer
 
 
 class OrganizationListCreateView(generics.ListCreateAPIView):
@@ -31,166 +15,122 @@ class OrganizationListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         queryset = Organization.objects.annotate(branch_count=Count("branches")).order_by("name")
-        organization_id = self.request.query_params.get("organization_id")
-        if organization_id:
-            queryset = queryset.filter(id=organization_id)
-        return queryset
+        if self.request.user.is_superuser:
+            return queryset
+        return queryset.filter(memberships__user=self.request.user, memberships__is_active=True).distinct()
+
+    def perform_create(self, serializer):
+        if not self.request.user.is_superuser:
+            raise PermissionDenied("Only platform administrators can create organizations.")
+        serializer.save()
 
 
-class OrganizationDetailView(generics.RetrieveUpdateAPIView):
-    permission_classes = [IsAuthenticated]
+class OrganizationDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = OrganizationSerializer
-    queryset = Organization.objects.all()
+    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    lookup_url_kwarg = "organization_id"
 
+    @property
+    def required_permissions(self):
+        return {}
 
-# -----------------------------------------------------------------------------
-# License Views
-# -----------------------------------------------------------------------------
+    def get_queryset(self):
+        queryset = Organization.objects.annotate(branch_count=Count("branches")).order_by("name")
+        if self.request.user.is_superuser:
+            return queryset
+        return queryset.filter(memberships__user=self.request.user, memberships__is_active=True)
 
+    def _check_write(self):
+        organization = self.get_object()
+        if not self.request.user.has_tenant_perm("organizations.manage", organization):
+            raise PermissionDenied("Missing organizations.manage permission.")
 
-class OrganizationLicenseView(generics.GenericAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = OrganizationLicenseSerializer
+    def perform_update(self, serializer):
+        self._check_write()
+        serializer.save()
 
-    def get(self, request, *args, **kwargs):
-        organization_id = request.query_params.get("organization_id")
-        if not organization_id:
-            return Response(
-                {"organization_id": "organization_id query parameter is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        license_obj = get_object_or_404(OrganizationLicense, organization__id=organization_id)
-        serializer = self.serializer_class(license_obj)
-        return Response(serializer.data)
-
-    def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(
-            data=request.data,
-            context=self.get_serializer_context(),
-        )
-        serializer.is_valid(raise_exception=True)
-        instance = serializer.save()
-        response_serializer = self.serializer_class(instance)
-        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-
-    def put(self, request, *args, **kwargs):
-        organization_id = request.data.get("organization_id")
-        if not organization_id:
-            return Response(
-                {"organization_id": "organization_id is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        license_obj = get_object_or_404(OrganizationLicense, organization__id=organization_id)
-        serializer = self.serializer_class(
-            license_obj,
-            data=request.data,
-            context=self.get_serializer_context(),
-        )
-        serializer.is_valid(raise_exception=True)
-        instance = serializer.save()
-        response_serializer = self.serializer_class(instance)
-        return Response(response_serializer.data)
-
-
-# -----------------------------------------------------------------------------
-# Branch Views
-# -----------------------------------------------------------------------------
+    def perform_destroy(self, instance):
+        if not self.request.user.is_superuser:
+            raise PermissionDenied("Only platform administrators can delete organizations.")
+        instance.delete()
 
 
 class BranchListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
     serializer_class = BranchSerializer
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "branches.read", "POST": "branches.manage"}
 
     def get_queryset(self):
-        queryset = Branch.objects.select_related("organization").all()
-        organization_id = self.request.query_params.get("organization_id")
-        if organization_id:
-            queryset = queryset.filter(organization__id=organization_id)
-        return queryset
+        return Branch.objects.filter(organization_id=self.request.query_params.get("organization_id"))
 
 
-class BranchDetailView(generics.RetrieveUpdateAPIView):
-    permission_classes = [IsAuthenticated]
+class BranchDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = BranchSerializer
-    queryset = Branch.objects.select_related("organization").all()
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "branches.read", "PUT": "branches.manage", "PATCH": "branches.manage", "DELETE": "branches.manage"}
+
+    def get_queryset(self):
+        return Branch.objects.filter(organization_id=self.kwargs["organization_id"])
 
 
-# -----------------------------------------------------------------------------
-# Branch Settings Views
-# -----------------------------------------------------------------------------
-
-
-class BranchSettingsView(generics.GenericAPIView):
-    permission_classes = [IsAuthenticated]
+class BranchSettingsView(generics.RetrieveUpdateAPIView):
     serializer_class = BranchSettingsSerializer
-
-    def get(self, request, *args, **kwargs):
-        branch_id = request.query_params.get("branch_id")
-        if not branch_id:
-            return Response(
-                {"branch_id": "branch_id query parameter is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        settings_obj = get_object_or_404(BranchSettings, branch__id=branch_id)
-        serializer = self.serializer_class(settings_obj)
-        return Response(serializer.data)
-
-    def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(
-            data=request.data,
-            context=self.get_serializer_context(),
-        )
-        serializer.is_valid(raise_exception=True)
-        instance = serializer.save()
-        response_serializer = self.serializer_class(instance)
-        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-
-    def put(self, request, *args, **kwargs):
-        branch_id = request.data.get("branch_id")
-        if not branch_id:
-            return Response(
-                {"branch_id": "branch_id is required."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        settings_obj = get_object_or_404(BranchSettings, branch__id=branch_id)
-        serializer = self.serializer_class(
-            settings_obj,
-            data=request.data,
-            context=self.get_serializer_context(),
-        )
-        serializer.is_valid(raise_exception=True)
-        instance = serializer.save()
-        response_serializer = self.serializer_class(instance)
-        return Response(response_serializer.data)
-
-
-# -----------------------------------------------------------------------------
-# Branch User Views
-# -----------------------------------------------------------------------------
-
-class BranchUserListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = BranchUserSerializer
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "branches.read", "PUT": "branches.manage", "PATCH": "branches.manage"}
+    lookup_url_kwarg = "branch_id"
 
     def get_queryset(self):
-        queryset = BranchUser.objects.select_related("branch", "branch__organization", "user", "role")
-        organization_id = self.request.query_params.get("organization_id")
-        branch_id = self.request.query_params.get("branch_id")
+        return BranchSettings.objects.filter(branch__organization_id=self.kwargs["organization_id"])
 
-        if organization_id:
-            queryset = queryset.filter(branch__organization__id=organization_id)
-        if branch_id:
-            queryset = queryset.filter(branch__id=branch_id)
-
-        return queryset
+    def get_object(self):
+        branch = get_object_or_404(Branch, id=self.kwargs["branch_id"], organization_id=self.kwargs["organization_id"])
+        settings_object, _ = BranchSettings.objects.get_or_create(branch=branch)
+        self.check_object_permissions(self.request, settings_object)
+        return settings_object
 
 
-class BranchUserDetailView(generics.RetrieveUpdateAPIView):
-    permission_classes = [IsAuthenticated]
-    serializer_class = BranchUserSerializer
-    queryset = BranchUser.objects.select_related("branch", "branch__organization", "user", "role")
+class OrganizationMembershipListCreateView(generics.ListCreateAPIView):
+    serializer_class = OrganizationMembershipSerializer
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "members.read", "POST": "members.manage"}
 
+    def get_queryset(self):
+        return OrganizationMembership.objects.filter(organization_id=self.kwargs["organization_id"]).select_related("user", "role")
+
+    def perform_create(self, serializer):
+        serializer.save(organization_id=self.kwargs["organization_id"])
+
+
+class OrganizationMembershipDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = OrganizationMembershipSerializer
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "members.read", "PUT": "members.manage", "PATCH": "members.manage", "DELETE": "members.manage"}
+
+    def get_queryset(self):
+        return OrganizationMembership.objects.filter(organization_id=self.kwargs["organization_id"]).select_related("user", "role")
+
+
+class BranchMembershipListCreateView(generics.ListCreateAPIView):
+    serializer_class = BranchMembershipSerializer
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "members.read", "POST": "members.manage"}
+
+    def get_queryset(self):
+        return BranchMembership.objects.filter(branch_id=self.kwargs["branch_id"], branch__organization_id=self.kwargs["organization_id"]).select_related("user", "branch")
+
+    def perform_create(self, serializer):
+        branch = get_object_or_404(
+            Branch,
+            id=self.kwargs["branch_id"],
+            organization_id=self.kwargs["organization_id"],
+        )
+        serializer.save(branch=branch)
+
+
+class BranchMembershipDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = BranchMembershipSerializer
+    permission_classes = [IsAuthenticated, HasTenantPermission]
+    required_permissions = {"GET": "members.read", "PUT": "members.manage", "PATCH": "members.manage", "DELETE": "members.manage"}
+
+    def get_queryset(self):
+        return BranchMembership.objects.filter(branch__organization_id=self.kwargs["organization_id"])
