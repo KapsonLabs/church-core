@@ -1,6 +1,8 @@
 from django.contrib.auth import authenticate, password_validation
 from rest_framework import serializers
 
+from apps.organization.models import Branch, Organization
+
 from .models import AccessPermission, Resource, Role, User
 
 
@@ -14,6 +16,26 @@ class UserSerializer(serializers.ModelSerializer):
 class UserDetailsSerializer(UserSerializer):
     """Compact compatibility serializer used by optional example apps."""
     pass
+
+
+class SessionOrganizationSerializer(serializers.ModelSerializer):
+    branch_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Organization
+        fields = ["id", "name", "slug", "description", "email", "phone_number", "website", "physical_address", "logo", "is_active", "branch_count", "created_at", "updated_at"]
+
+    def get_branch_count(self, organization):
+        return organization.branches.filter(is_active=True).count()
+
+
+class SessionBranchSerializer(serializers.ModelSerializer):
+    organization_id = serializers.UUIDField(read_only=True)
+    organization = SessionOrganizationSerializer(read_only=True)
+
+    class Meta:
+        model = Branch
+        fields = ["id", "organization_id", "organization", "name", "code", "email", "phone_number", "address", "city", "country", "is_active", "created_at", "updated_at"]
 
 
 class RoleShortDetailsSerializer(serializers.ModelSerializer):

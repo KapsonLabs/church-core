@@ -32,6 +32,8 @@ celery -A config beat --loglevel=info
 daphne config.asgi:application
 ```
 
+The church module uses both the worker and Beat. Beat creates the next day's Sunday services every Saturday at 23:59 in `Africa/Kampala`.
+
 The liveness and dependency endpoints are `/health/` and `/ready/`. API routes are under `/api/v1/`; Django admin is under `/admin/`.
 
 ## First organization
@@ -52,6 +54,24 @@ python manage.py check --deploy
 
 Production must use `config.settings.production`. Configure all values described in `.env.example`, terminate TLS at the application or trusted proxy, and run migrations plus `collectstatic` during deployment.
 
+## Church VPS deployment
+
+The production script deploys directly from `/root/projects/Church`. It expects the backend at `/root/projects/Church/church-core`, the frontend at `/root/projects/Church/church-frontend`, and a committed production frontend artifact at `/root/projects/Church/church-frontend/dist/index.html`. Build the frontend with its production API URL and KingdomKids branding before committing and pushing `dist`; the server does not install Node dependencies or build the frontend.
+
+Before the first deployment, create `church-core/.env` with production values, including a long random `SECRET_KEY`, `DATABASE_URL`, `REDIS_URL`, `ALLOWED_HOSTS=children.church.iolabz.ug`, `CORS_ALLOWED_ORIGINS=https://children.church.iolabz.ug`, `SESSION_COOKIE_SECURE=true`, and `CSRF_COOKIE_SECURE=true`.
+
+```bash
+SSL_EMAIL=admin@example.com sudo -E bash deploy.sh
+```
+
+The script validates and applies committed migrations, collects Django static files into `church-core/staticfiles`, keeps uploads in `church-core/media`, serves the committed frontend `dist` directory directly, configures `church.service`, `church-celery.service`, `church-celery-beat.service`, and Nginx, and obtains the Let's Encrypt certificate. It deliberately runs the application services as root because the supplied source checkout is under `/root`; moving the checkout to a dedicated service account is recommended for stronger process isolation.
+
+The deployment does not create an administrator interactively. Create the first superuser separately:
+
+```bash
+DJANGO_SETTINGS_MODULE=config.settings.production .venv/bin/python manage.py createsuperuser
+```
+
 ## Customize after cloning
 
 1. Rename the repository and update the title in this README.
@@ -61,3 +81,5 @@ Production must use `config.settings.production`. Configure all values described
 5. Add project-specific resources and permissions through an idempotent seed command.
 
 See [architecture](docs/architecture.md) and [extension guide](docs/extending.md) before adding tenant-owned data.
+
+The enabled Children's Church feature is documented in [docs/church.md](docs/church.md).

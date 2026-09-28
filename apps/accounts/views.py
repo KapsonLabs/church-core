@@ -6,10 +6,27 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
 
-from apps.organization.models import Organization
+from apps.organization.models import Branch, Organization
 from .models import AccessPermission, Role, User
 from .permissions import HasTenantPermission, IsOrganizationMember
-from .serializers import AccessPermissionSerializer, ChangePasswordSerializer, LoginSerializer, RoleSerializer, UserCreateSerializer, UserSerializer
+from .serializers import AccessPermissionSerializer, ChangePasswordSerializer, LoginSerializer, RoleSerializer, SessionBranchSerializer, UserCreateSerializer, UserSerializer
+
+
+def eligible_session_branches(user):
+    """Return the active branch context a user may enter after authentication."""
+    return (
+        Branch.objects.filter(
+            is_active=True,
+            organization__is_active=True,
+            memberships__user=user,
+            memberships__is_active=True,
+            organization__memberships__user=user,
+            organization__memberships__is_active=True,
+        )
+        .select_related("organization")
+        .order_by("organization__name", "name", "id")
+        .distinct()
+    )
 
 
 class LoginView(APIView):
@@ -20,7 +37,12 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         refresh = RefreshToken.for_user(user)
-        return Response({"data": {"access": str(refresh.access_token), "refresh": str(refresh), "user": UserSerializer(user).data}})
+        return Response({"data": {
+            "access": str(refresh.access_token),
+            "refresh": str(refresh),
+            "user": UserSerializer(user).data,
+            "branches": SessionBranchSerializer(eligible_session_branches(user), many=True).data,
+        }})
 
 
 class LogoutView(APIView):
@@ -43,6 +65,14 @@ class CurrentUserView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class CurrentUserContextView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        branches = SessionBranchSerializer(eligible_session_branches(request.user), many=True).data
+        return Response({"data": {"branches": branches}})
 
 
 class ChangePasswordView(APIView):

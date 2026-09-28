@@ -11,6 +11,7 @@ urlpatterns = [
     path("ready/", readiness, name="readiness"),
     path("api/v1/accounts/", include("apps.accounts.urls")),
     path("api/v1/organizations/", include("apps.organization.urls")),
+    path("api/v1/church/", include("apps.church.urls")),
 ]
 
 if settings.DEBUG:

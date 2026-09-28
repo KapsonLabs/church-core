@@ -2,6 +2,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -27,6 +28,7 @@ INSTALLED_APPS = [
     "channels",
     "apps.accounts",
     "apps.organization",
+    "apps.church",
 ]
 
 # Optional examples are deliberately disabled. See docs/optional-apps.md.
@@ -125,7 +127,13 @@ CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default=REDIS_URL)
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
-CELERY_TIMEZONE = TIME_ZONE
+CELERY_TIMEZONE = env("CELERY_TIMEZONE", default="Africa/Kampala")
+CELERY_BEAT_SCHEDULE = {
+    "create-next-sunday-services": {
+        "task": "apps.church.tasks.create_next_sunday_services",
+        "schedule": crontab(minute=59, hour=23, day_of_week="saturday"),
+    },
+}
 
 EMAIL_BACKEND = env(
     "EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend"
