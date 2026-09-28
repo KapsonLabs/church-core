@@ -106,6 +106,33 @@ class ChurchApiTests(ChurchDomainTests):
         child.refresh_from_db()
         self.assertFalse(child.is_active)
 
+    def test_child_detail_attendance_includes_check_in_and_recorder_name(self):
+        child = self.make_child()
+        event = create_sunday_services(
+            organization=self.organization,
+            branch=self.branch,
+            sunday_date=next_sunday(),
+            actor=self.user,
+            sessions=[{"name": "Morning", "service_order": 1, "start_time": "08:00"}],
+        )
+        checked_in_at = timezone.now()
+        ChildAttendance.objects.create(
+            child=child,
+            event=event,
+            service_session=event.sessions.get(),
+            age_group=self.age_group,
+            attendance_status="present",
+            checked_in_at=checked_in_at,
+            recorded_by=self.user,
+        )
+
+        response = self.client.get(f"/api/v1/church/children/{child.id}/", self.scope)
+
+        self.assertEqual(response.status_code, 200, response.json())
+        attendance = response.json()["data"]["recent_attendance"][0]
+        self.assertEqual(attendance["recorded_by_name"], "Admin")
+        self.assertEqual(attendance["checked_in_at"], checked_in_at.isoformat().replace("+00:00", "Z"))
+
     def test_age_group_and_event_creation_use_existing_manage_permissions(self):
         group_response = self.client.post(
             "/api/v1/church/age-groups/",
@@ -152,7 +179,7 @@ class ChurchApiTests(ChurchDomainTests):
         monthly = response.json()["data"]["monthly_attendance"]
         self.assertEqual(monthly["year"], year)
         self.assertEqual(len(monthly["months"]), 12)
-        self.assertEqual(monthly["months"][0], {"month": 1, "label": "January", "present": 1, "absent": 1})
+        self.assertEqual(monthly["months"][0], {"month": 1, "label": "January", "present": 50.0, "absent": 50.0})
         self.assertTrue(all(row["present"] == row["absent"] == 0 for row in monthly["months"][1:]))
 
     def test_ordinary_event_bulk_attendance(self):

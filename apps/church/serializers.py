@@ -153,11 +153,17 @@ class ChildAttendanceSerializer(CleanModelSerializer):
     child_name = serializers.CharField(source="child.__str__", read_only=True)
     age_group_name = serializers.CharField(source="age_group.name", read_only=True)
     service_name = serializers.CharField(source="service_session.name", read_only=True)
+    recorded_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = ChildAttendance
-        fields = ["id", "child", "child_name", "event", "service_session", "service_name", "age_group", "age_group_name", "attendance_status", "checked_in_at", "recorded_by", "notes", "created_at", "updated_at"]
+        fields = ["id", "child", "child_name", "event", "service_session", "service_name", "age_group", "age_group_name", "attendance_status", "checked_in_at", "recorded_by", "recorded_by_name", "notes", "created_at", "updated_at"]
         read_only_fields = ["id", "age_group", "recorded_by", "created_at", "updated_at"]
+
+    def get_recorded_by_name(self, obj):
+        if not obj.recorded_by:
+            return None
+        return obj.recorded_by.get_full_name() or obj.recorded_by.email
 
 
 class ServiceFacilitatorSerializer(CleanModelSerializer):

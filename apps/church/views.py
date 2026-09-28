@@ -94,7 +94,7 @@ class ChildViewSet(ChurchModelViewSet):
     def retrieve(self, request, *args, **kwargs):
         child = self.get_object()
         data = self.get_serializer(child).data
-        records = child.attendance_records.select_related("event", "service_session", "age_group")[:20]
+        records = child.attendance_records.select_related("event", "service_session", "age_group", "recorded_by")[:20]
         outcomes = {}
         rank = {AttendanceStatus.ABSENT: 1, AttendanceStatus.EXCUSED: 2, AttendanceStatus.PRESENT: 3, AttendanceStatus.LATE: 3}
         for event_id, value in child.attendance_records.values_list("event_id", "attendance_status"):
@@ -420,6 +420,11 @@ class DashboardSummaryView(ChurchScopedMixin, APIView):
             bucket = monthly[event.event_date.month - 1]
             bucket["present"] += event_counts["present"] + event_counts["late"]
             bucket["absent"] += event_counts["absent"] + event_counts["excused"]
+        for bucket in monthly:
+            total = bucket["present"] + bucket["absent"]
+            if total:
+                bucket["present"] = round(bucket["present"] * 100 / total, 1)
+                bucket["absent"] = round(bucket["absent"] * 100 / total, 1)
         return Response({
             "total_registered_children": Child.objects.filter(branch=branch).count(),
             "active_children": Child.objects.filter(branch=branch, is_active=True).count(),
