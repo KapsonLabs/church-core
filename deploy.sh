@@ -347,7 +347,7 @@ configure_nginx() {
     print_message "Creating Nginx configuration at $NGINX_CONFIG..."
     
     cat > "$NGINX_CONFIG" << 'EOF'
-upstream safari_asgi {
+upstream church_asgi {
     server unix:/run/daphne/church.sock;
 }
 
