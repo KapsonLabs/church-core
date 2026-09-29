@@ -1,218 +1,548 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# Church production deployment for children.church.iolabz.ug.
-# Source repositories are expected at the paths below. Run with:
-#   SSL_EMAIL=admin@example.com sudo -E bash deploy.sh
+# CaseIO Deployment Script
+# Run this script after pulling the repository onto your VPS.
+#
+# How to run:
+#   sudo bash deploy.sh
+#
+# Or make it executable and run:
+#   chmod +x deploy.sh
+#   sudo ./deploy.sh
+#
+#   eval "$(ssh-agent -s)"
+#   ssh-add ~/.ssh/id_ed25519
+#
+# Requirements:
+#   - Run as root (sudo). The script will exit with an error if not.
+#   - Run from the machine where the app will be deployed (paths in the script use PROJECT_ROOT).
+#
+# The script will prompt before starting and before overwriting existing config files.
 
-set -Eeuo pipefail
+set -e  # Exit on any error
 
-APP_DOMAIN="children.church.iolabz.ug"
+# Color codes for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Project paths (adjust if needed)
 PROJECT_ROOT="/root/projects/Church"
 PROJECT_DIR="$PROJECT_ROOT/church-core"
-FRONTEND_ROOT="$PROJECT_ROOT/church-frontend"
-VENV_PATH="$PROJECT_DIR/.venv"
-STATIC_DIR="$PROJECT_DIR/staticfiles"
-MEDIA_DIR="$PROJECT_DIR/media"
-ENV_FILE="$PROJECT_DIR/.env"
-SOCKET_PATH="/run/church/daphne.sock"
+FRONTEND_ROOT="$PROJECT_ROOT/church-app"
+VENV_NAME="church_env"
+VENV_PATH="$PROJECT_DIR/$VENV_NAME"
+MANAGE_PY="$PROJECT_DIR/manage.py"
+ASGI_MODULE="config.asgi:application"
 
-WEB_SERVICE="church.service"
-WORKER_SERVICE="church-celery.service"
-BEAT_SERVICE="church-celery-beat.service"
-NGINX_SITE="/etc/nginx/sites-available/church"
-
-log() { printf '\n[Church] %s\n' "$1"; }
-fail() { printf '\n[Church ERROR] %s\n' "$1" >&2; exit 1; }
-trap 'fail "Deployment stopped at line $LINENO."' ERR
-
-preflight() {
-    [ "${EUID}" -eq 0 ] || fail "Run this script with sudo/root privileges."
-    [ -n "${SSL_EMAIL:-}" ] || fail "SSL_EMAIL is required for Let’s Encrypt."
-    [ -d "$PROJECT_DIR" ] || fail "Backend directory not found: $PROJECT_DIR"
-    [ -d "$FRONTEND_ROOT" ] || fail "Frontend directory not found: $FRONTEND_ROOT"
-    [ -f "$ENV_FILE" ] || fail "Production environment file not found: $ENV_FILE"
-    [ -f "$FRONTEND_ROOT/dist/index.html" ] || fail "Committed frontend build not found: $FRONTEND_ROOT/dist/index.html"
-    for command in python3 systemctl curl apt-get; do
-        command -v "$command" >/dev/null 2>&1 || fail "Required command is not installed: $command"
-    done
-    grep -Eq '^SECRET_KEY=.+$' "$ENV_FILE" || fail "SECRET_KEY must be configured in $ENV_FILE"
-    grep -Eq '^DATABASE_URL=.+$' "$ENV_FILE" || fail "DATABASE_URL must be configured in $ENV_FILE"
-    grep -Eq '^REDIS_URL=.+$' "$ENV_FILE" || fail "REDIS_URL must be configured in $ENV_FILE"
-    grep -Eq '^ALLOWED_HOSTS=.+$' "$ENV_FILE" || fail "ALLOWED_HOSTS must be configured in $ENV_FILE"
-    grep -Eq '^CORS_ALLOWED_ORIGINS=.+$' "$ENV_FILE" || fail "CORS_ALLOWED_ORIGINS must be configured in $ENV_FILE"
+# Print colored message
+print_message() {
+    echo -e "${GREEN}[DEPLOY]${NC} $1"
 }
 
-install_system_packages() {
-    log "Installing Nginx and Certbot"
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
 }
 
-setup_backend() {
-    log "Installing backend dependencies"
-    if [ ! -x "$VENV_PATH/bin/python" ]; then
-        python3 -m venv "$VENV_PATH"
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+print_step() {
+    echo -e "\n${GREEN}========================================${NC}"
+    echo -e "${GREEN}$1${NC}"
+    echo -e "${GREEN}========================================${NC}\n"
+}
+
+# Check if running as root or with sudo
+check_root() {
+    if [ "$EUID" -ne 0 ]; then 
+        print_error "This script requires sudo privileges for system configuration"
+        print_info "Please run: sudo bash deploy.sh"
+        exit 1
     fi
-    "$VENV_PATH/bin/pip" install --upgrade pip
-    "$VENV_PATH/bin/pip" install -r "$PROJECT_DIR/requirements.txt"
-
-    log "Validating production configuration and migrations"
-    cd "$PROJECT_DIR"
-    DJANGO_SETTINGS_MODULE=config.settings.production "$VENV_PATH/bin/python" manage.py check --deploy --fail-level WARNING
-    DJANGO_SETTINGS_MODULE=config.settings.production "$VENV_PATH/bin/python" manage.py makemigrations --check --dry-run
-    DJANGO_SETTINGS_MODULE=config.settings.production "$VENV_PATH/bin/python" manage.py migrate --noinput
-    # DJANGO_SETTINGS_MODULE=config.settings.production "$VENV_PATH/bin/python" manage.py seed_permissions
-    DJANGO_SETTINGS_MODULE=config.settings.production "$VENV_PATH/bin/python" manage.py seed_watoto_sample_data
-
-    install -d -m 0755 "$STATIC_DIR" "$MEDIA_DIR"
-    DJANGO_SETTINGS_MODULE=config.settings.production STATIC_ROOT="$STATIC_DIR" MEDIA_ROOT="$MEDIA_DIR" "$VENV_PATH/bin/python" manage.py collectstatic --noinput
 }
 
-write_services() {
-    log "Writing systemd services"
-    cat > "/etc/systemd/system/$WEB_SERVICE" <<EOF
+# Step 1: Create virtual environment
+create_virtualenv() {
+    print_step "Step 1: Creating Virtual Environment"
+    
+    cd "$PROJECT_DIR" || exit 1
+    
+    if [ -d "$VENV_PATH" ]; then
+        print_warning "Virtual environment already exists at $VENV_PATH"
+        read -p "Do you want to recreate it? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            print_message "Removing old virtual environment..."
+            rm -rf "$VENV_PATH"
+        else
+            print_message "Keeping existing virtual environment"
+            return 0
+        fi
+    fi
+    
+    print_message "Creating virtual environment at $VENV_PATH..."
+    python3 -m venv "$VENV_PATH"
+    
+    if [ -d "$VENV_PATH" ]; then
+        print_message "✓ Virtual environment created successfully"
+    else
+        print_error "Failed to create virtual environment"
+        exit 1
+    fi
+}
+
+# Step 2: Activate virtual environment (set variables for following commands)
+setup_venv() {
+    print_step "Step 2: Setting Up Virtual Environment"
+    
+    if [ ! -d "$VENV_PATH" ]; then
+        print_error "Virtual environment not found at $VENV_PATH"
+        exit 1
+    fi
+    
+    print_message "Virtual environment ready at $VENV_PATH"
+    print_info "Using Python: $VENV_PATH/bin/python"
+    print_info "Using Pip: $VENV_PATH/bin/pip"
+}
+
+# Step 3: Install packages
+install_packages() {
+    print_step "Step 3: Installing Python Packages"
+    
+    cd "$PROJECT_DIR" || exit 1
+    
+    if [ ! -f "requirements.txt" ]; then
+        print_error "requirements.txt not found"
+        exit 1
+    fi
+    
+    print_message "Installing packages from requirements.txt..."
+    "$VENV_PATH/bin/pip" install --upgrade pip
+    "$VENV_PATH/bin/pip" install -r requirements.txt
+    
+    print_message "Installing uvcorn..."
+    "$VENV_PATH/bin/pip" install uvloop Twisted[http2,tls]
+    
+    print_message "✓ All packages installed successfully"
+}
+
+# Step 4 & 5: Run migrations
+run_migrations() {
+    print_step "Steps 4 & 5: Running Database Migrations"
+    
+    cd "$PROJECT_DIR" || exit 1
+    
+    print_message "Creating migrations..."
+    "$VENV_PATH/bin/python" manage.py makemigrations
+    
+    print_message "Applying migrations..."
+    "$VENV_PATH/bin/python" manage.py migrate
+    
+    print_message "✓ Migrations completed successfully"
+}
+
+# Step 6: Create superuser
+create_superuser() {
+    print_step "Step 6: Creating Superuser"
+    
+    cd "$PROJECT_DIR" || exit 1
+    
+    print_info "You will now be prompted to enter superuser details"
+    print_info "Press Ctrl+C to skip if superuser already exists"
+    echo
+    
+    "$VENV_PATH/bin/python" manage.py createsuperuser || {
+        print_warning "Superuser creation skipped or failed"
+        print_info "You can create it later with: python manage.py createsuperuser"
+    }
+    
+    echo
+    print_message "Superuser setup complete"
+}
+
+# Step 7: Collect static files
+collect_static() {
+    print_step "Step 7: Collecting Static Files"
+    
+    cd "$PROJECT_DIR" || exit 1
+    
+    print_message "Collecting static files..."
+    "$VENV_PATH/bin/python" manage.py collectstatic --noinput
+    
+    print_message "✓ Static files collected successfully"
+}
+
+
+# Step 9: Create systemd service file
+create_service_file() {
+    print_step "Step 9: Creating Systemd Service File"
+    
+    SERVICE_FILE="/etc/systemd/system/church.service"
+    
+    if [ -f "$SERVICE_FILE" ]; then
+        print_warning "Service file already exists"
+        read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_message "Keeping existing service file"
+            return 0
+        fi
+    fi
+    
+    print_message "Creating service file at $SERVICE_FILE..."
+    
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=Church Daphne web service
+Description=Daphne ASGI Server
 After=network.target
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=www-data
+Group=www-data
 WorkingDirectory=$PROJECT_DIR
-EnvironmentFile=$ENV_FILE
 Environment=DJANGO_SETTINGS_MODULE=config.settings.production
-Environment=STATIC_ROOT=$STATIC_DIR
-Environment=MEDIA_ROOT=$MEDIA_DIR
-RuntimeDirectory=church
-RuntimeDirectoryMode=0755
-ExecStart=$VENV_PATH/bin/daphne -u $SOCKET_PATH --access-log - --proxy-headers config.asgi:application
+ExecStart=$VENV_PATH/bin/daphne -u /run/daphne/church.sock --access-log - --proxy-headers $ASGI_MODULE
 Restart=on-failure
-RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-    cat > "/etc/systemd/system/$WORKER_SERVICE" <<EOF
-[Unit]
-Description=Church Celery worker
-After=network.target redis-server.service
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=$PROJECT_DIR
-EnvironmentFile=$ENV_FILE
-Environment=DJANGO_SETTINGS_MODULE=config.settings.production
-ExecStart=$VENV_PATH/bin/celery -A config worker --loglevel=info
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    cat > "/etc/systemd/system/$BEAT_SERVICE" <<EOF
-[Unit]
-Description=Church Celery Beat scheduler
-After=network.target redis-server.service
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=$PROJECT_DIR
-EnvironmentFile=$ENV_FILE
-Environment=DJANGO_SETTINGS_MODULE=config.settings.production
-StateDirectory=church-celery
-ExecStart=$VENV_PATH/bin/celery -A config beat --loglevel=info --schedule=/var/lib/church-celery/beat-schedule
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable "$WEB_SERVICE" "$WORKER_SERVICE" "$BEAT_SERVICE"
-    systemctl restart "$WEB_SERVICE" "$WORKER_SERVICE" "$BEAT_SERVICE"
+    
+    print_message "✓ Service file created successfully"
 }
 
-write_nginx() {
-    log "Configuring Nginx"
-    cat > "$NGINX_SITE" <<EOF
-upstream church_asgi {
-    server unix:$SOCKET_PATH;
+# Step 10: Reload systemd and start Church (Daphne) so the socket is created
+start_safari_service() {
+    print_step "Step 10: Starting Church (Daphne) Service"
+    
+    print_message "Reloading systemd daemon..."
+    systemctl daemon-reload
+    
+    print_message "Enabling safari.service to start on boot..."
+    systemctl enable church.service
+    
+    print_message "Starting safari.service (creates /run/daphne/safari.sock)..."
+    systemctl start church.service
+    
+    if systemctl is-active --quiet safari.service; then
+        print_message "✓ Church service is running"
+        if [ -S /run/daphne/safari.sock ]; then
+            print_message "✓ Socket created: /run/daphne/church.sock"
+        else
+            print_warning "Socket not yet present; check: sudo journalctl -u church.service -n 30"
+        fi
+    fi
+}
+
+# Step 11: Create Celery worker systemd service file
+create_celery_worker_service() {
+    print_step "Step 11: Creating Celery Worker Service File"
+    
+    CELERY_SERVICE_FILE="/etc/systemd/system/church-celery.service"
+    
+    if [ -f "$CELERY_SERVICE_FILE" ]; then
+        print_warning "Celery worker service file already exists"
+        read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_message "Keeping existing Celery worker service file"
+            return 0
+        fi
+    fi
+    
+    print_message "Creating Celery worker service file at $CELERY_SERVICE_FILE..."
+    
+    cat > "$CELERY_SERVICE_FILE" << EOF
+[Unit]
+Description=Celery Worker for Church
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=$PROJECT_DIR
+Environment=DJANGO_SETTINGS_MODULE=config.settings
+ExecStart=$VENV_PATH/bin/celery -A config worker -n church@%%h -Q church -l info
+Restart=on-failure
+RestartSec=10   
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    print_message "Creating Celery log directory (optional for journalctl)..."
+    mkdir -p /var/log/celery
+    chown www-data:www-data /var/log/celery 2>/dev/null || true
+    
+    print_message "✓ Celery worker service file created successfully"
+}
+
+# Step 12: Create Celery beat systemd service file
+create_celery_beat_service() {
+    print_step "Step 12: Creating Celery Beat Service File"
+    
+    CELERY_BEAT_SERVICE_FILE="/etc/systemd/system/church-celery-beat.service"
+    
+    if [ -f "$CELERY_BEAT_SERVICE_FILE" ]; then
+        print_warning "Celery beat service file already exists"
+        read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_message "Keeping existing Celery beat service file"
+            return 0
+        fi
+    fi
+    
+    print_message "Creating Celery beat service file at $CELERY_BEAT_SERVICE_FILE..."
+    
+    cat > "$CELERY_BEAT_SERVICE_FILE" << EOF
+[Unit]
+Description=Celery Beat for Church
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=$PROJECT_DIR
+Environment=DJANGO_SETTINGS_MODULE=config.settings
+StateDirectory=celery
+ExecStart=$VENV_PATH/bin/celery -A config beat -l info --schedule=/var/lib/celery/church-beat-schedule
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    print_message "✓ Celery beat service file created successfully"
+}
+
+# Step 13: Configure Nginx (frontend SPA + backend API proxy)
+configure_nginx() {
+    print_step "Step 13: Configuring Nginx"
+    
+    NGINX_CONFIG="/etc/nginx/sites-available/church"
+    
+    if [ -f "$NGINX_CONFIG" ]; then
+        print_warning "Nginx configuration already exists"
+        read -p "Do you want to overwrite it? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_message "Keeping existing Nginx configuration"
+            return 0
+        fi
+    fi
+    
+    print_message "Creating Nginx configuration at $NGINX_CONFIG..."
+    
+    cat > "$NGINX_CONFIG" << 'EOF'
+upstream safari_asgi {
+    server unix:/run/daphne/church.sock;
 }
 
 server {
     listen 80;
-    listen [::]:80;
-    server_name $APP_DOMAIN;
-    root $FRONTEND_ROOT/dist;
-    index index.html;
-    client_max_body_size 10M;
+    server_name children.church.iolabz.ug;
 
+    # Frontend SPA root
+    root /root/projects/Church/church-app/dist;
+    index index.html;
+
+    # Max upload size for profile images etc.
+    client_max_body_size 5M;
+
+    # Logging
+    access_log /var/log/nginx/church.access.log;
+    error_log /var/log/nginx/church.error.log;
+
+    # Backend API proxy (Daphne/Django)
     location /api/ {
         proxy_pass http://church_asgi;
         proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Cookie handling for session auth
+        proxy_set_header Cookie $http_cookie;
+        proxy_pass_header Set-Cookie;
     }
 
+    # Django admin proxy
     location /admin/ {
         proxy_pass http://church_asgi;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Cookie $http_cookie;
+        proxy_pass_header Set-Cookie;
     }
 
-    location = /health/ { proxy_pass http://church_asgi; proxy_set_header Host \$host; proxy_set_header X-Forwarded-Proto \$scheme; }
-    location = /ready/ { proxy_pass http://church_asgi; proxy_set_header Host \$host; proxy_set_header X-Forwarded-Proto \$scheme; }
-    location /static/ { alias $STATIC_DIR/; expires 30d; add_header Cache-Control "public, immutable"; }
-    location /media/ { alias $MEDIA_DIR/; expires 7d; }
-    location / { try_files \$uri \$uri/ /index.html; }
+
+    # Block direct access to /media/ (must go through Django auth)
+    location /media/ {
+        alias /root/projects/Church/church-core/media/;
+    }
+
+    # Frontend SPA fallback (must be last)
+    location / {    
+        try_files $uri /index.html =404;
+    }
 }
+
 EOF
-    ln -sfn "$NGINX_SITE" /etc/nginx/sites-enabled/church
-    rm -f /etc/nginx/sites-enabled/default
-    nginx -t
-    systemctl enable nginx
+    
+    print_message "✓ Nginx configuration created successfully"
+}
+
+# Step 14: Enable Nginx site
+enable_nginx_site() {
+    print_step "Step 14: Enabling Nginx Site"
+    
+    NGINX_AVAILABLE="/etc/nginx/sites-available/church"
+    NGINX_ENABLED="/etc/nginx/sites-enabled/church"
+    
+    if [ -L "$NGINX_ENABLED" ]; then
+        print_warning "Nginx site already enabled"
+    else
+        print_message "Creating symbolic link..."
+        ln -s "$NGINX_AVAILABLE" "$NGINX_ENABLED"
+        print_message "✓ Nginx site enabled"
+    fi
+    
+    # Test Nginx configuration
+    print_message "Testing Nginx configuration..."
+    nginx -t || {
+        print_error "Nginx configuration test failed"
+        exit 1
+    }
+    
+    print_message "✓ Nginx configuration is valid"
+}
+
+# Step 15: Restart Nginx
+restart_nginx() {
+    print_step "Step 15: Restarting Nginx"
+    
+    print_message "Restarting Nginx..."
     systemctl restart nginx
+    
+    print_message "✓ Nginx restarted successfully"
+    
+    # Check Nginx status
+    print_info "Nginx status:"
+    systemctl status nginx --no-pager || true
 }
 
-configure_https() {
-    log "Obtaining or renewing the Let’s Encrypt certificate"
-    certbot --nginx --domain "$APP_DOMAIN" --email "$SSL_EMAIL" --agree-tos --non-interactive --redirect --keep-until-expiring
-    nginx -t
-    systemctl reload nginx
+# Final status check
+final_status() {
+    print_step "Deployment Complete!"
+    
+    echo -e "${GREEN}✓ Virtual environment created${NC}"
+    echo -e "${GREEN}✓ Packages installed${NC}"
+    echo -e "${GREEN}✓ Database migrated${NC}"
+    echo -e "${GREEN}✓ Superuser created${NC}"
+    echo -e "${GREEN}✓ Static files collected${NC}"
+    echo -e "${GREEN}✓ Systemd services configured${NC}"
+    echo -e "${GREEN}✓ Celery worker and beat services configured${NC}"
+    echo -e "${GREEN}✓ Nginx configured${NC}"
+    
+    echo -e "\n${BLUE}========================================${NC}"
+    echo -e "${BLUE}Next Steps:${NC}"
+    echo -e "${BLUE}========================================${NC}\n"
+    
+    echo "1. Reload systemd and start Celery (requires Redis):"
+    echo "   sudo systemctl daemon-reload"
+    echo "   sudo systemctl enable church-celery church-celery-beat"
+    echo "   sudo systemctl start church-celery church-celery-beat"
+    echo ""
+    echo "2. Check service status:"
+    echo "   sudo systemctl status church.service"
+    echo "   sudo systemctl status church-celery"
+    echo "   sudo systemctl status church-celery-beat"
+    echo "   sudo systemctl status nginx"
+    echo "   sudo service church-celery restart"
+    echo "   sudo service church-celery-beat restart"
+    echo ""
+    echo "3. View logs:"
+    echo "   sudo journalctl -u church.service -f"
+    echo "   sudo journalctl -u church-celery -f"
+    echo "   sudo journalctl -u church-celery-beat -f"
+    echo ""
+    echo "4. Test the app:"
+    echo "   curl http://children.church.iolabz.ug/           # Frontend SPA"
+    echo "   curl http://children.church.iolabz.ug/api/v1/    # Backend API"
+    echo "   curl http://children.church.iolabz.ug/admin/     # Django Admin"
+    echo ""
+    echo "5. Configure environment variables in .env file"
+    echo ""
+    echo "Add these to the production environment variables:"
+    echo "   DEBUG=False"
+    echo "   ALLOWED_HOSTS=app.ngobe.iolabz.ug"
+    echo "   CSRF_TRUSTED_ORIGINS=https://children.church.iolabz.ug"
+    echo "   CORS_ALLOWED_ORIGINS=https://children.church.iolabz.ug"
+    echo "   USE_X_ACCEL_REDIRECT=True"
+    echo ""
+    echo "6. Set up SSL with Let's Encrypt:"
+    echo "   sudo apt install certbot python3-certbot-nginx"
+    echo "   sudo certbot --nginx -d app.ngobe.iolabz.ug"
+    echo ""
+    echo -e "${GREEN}Your application should now be running!${NC}"
+    echo -e "${GREEN}Frontend: http://children.church.iolabz.ug/${NC}"
+    echo -e "${GREEN}API:      http://children.church.iolabz.ug/api/v1/${NC}"
+    echo -e "${GREEN}Admin:    http://children.church.iolabz.ug/admin/${NC}"
 }
 
-verify() {
-    log "Verifying services"
-    systemctl is-active --quiet "$WEB_SERVICE"
-    systemctl is-active --quiet "$WORKER_SERVICE"
-    systemctl is-active --quiet "$BEAT_SERVICE"
-    systemctl is-active --quiet nginx
-    curl --fail --silent --show-error "https://$APP_DOMAIN/health/" >/dev/null
-    curl --fail --silent --show-error "https://$APP_DOMAIN/ready/" >/dev/null
-    log "Deployment complete: https://$APP_DOMAIN"
-    printf 'Create the first superuser when needed with:\n  DJANGO_SETTINGS_MODULE=config.settings.production %s/bin/python %s/manage.py createsuperuser\n' "$VENV_PATH" "$PROJECT_DIR"
-}
-
+# Main deployment flow
 main() {
-    preflight
-    install_system_packages
-    setup_backend
-    write_services
-    write_nginx
-    configure_https
-    verify
+    print_message "Starting Safari Ngobe Safaris Deployment..."
+    echo -e "${BLUE}Project Root: $PROJECT_ROOT${NC}"
+    echo -e "${BLUE}Virtual Env: $VENV_PATH${NC}"
+    echo -e "${BLUE}Project Dir: $PROJECT_DIR${NC}\n"
+    
+    # Confirm before proceeding
+    read -p "Continue with deployment? (y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        print_warning "Deployment cancelled"
+        exit 0
+    fi
+    
+    # Check root
+    check_root
+    
+    # Run all steps
+    create_virtualenv
+    setup_venv
+    install_packages
+    run_migrations
+    create_superuser
+    collect_static
+    create_service_file
+    start_safari_service
+    create_celery_worker_service
+    create_celery_beat_service
+    configure_nginx
+    enable_nginx_site
+    restart_nginx
+    final_status
 }
 
-main "$@"
+# Run main function
+main
